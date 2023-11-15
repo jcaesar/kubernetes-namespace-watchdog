@@ -7,7 +7,7 @@ use kube::api::DeleteParams;
 use kube::Api;
 use kube::Client;
 use kube::Config;
-use namespace_watchdog::WatchArgs;
+use kubernetes_namespace_watchdog_lib::WatchArgs;
 use serde::Deserialize;
 use std::cmp::max;
 use std::cmp::min;
