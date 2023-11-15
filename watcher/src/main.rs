@@ -23,20 +23,13 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::wrappers::SignalStream;
 use warp::Filter;
 
+/// Watchdog: Remove a namespace if no treat is fed to us for a while
+/// Not meant to be run manually
 #[derive(clap::Parser)]
 #[command(author, version, about)]
 struct Main {
     #[command(flatten)]
     command: WatchArgs,
-}
-
-#[derive(clap::Parser)]
-struct DeployArgs {
-    #[arg(short, long)]
-    // namespace to watch
-    namespace: String,
-    #[command(flatten)]
-    watch_args: WatchArgs,
 }
 
 #[tokio::main(flavor = "current_thread")]

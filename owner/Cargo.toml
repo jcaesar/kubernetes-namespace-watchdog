@@ -5,3 +5,10 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
+anyhow = "1.0.75"
+clap.workspace = true
+humantime.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+kubernetes-namespace-watchdog-lib = { version = "0.1.0", path = "../common", features = ["clap"] }
+tokio.workspace = true

@@ -8,17 +8,17 @@ use std::{net::SocketAddr, time::Duration};
 #[derive(Deserialize, Serialize)]
 #[cfg_attr(feature = "clap", derive(clap::Parser))]
 pub struct WatchArgs {
-    /// Maximum timeout
-    #[cfg_attr(feature = "clap", arg(long))]
-    #[cfg_attr(feature = "clap", clap(value_parser = humantime::parse_duration))]
-    #[serde(with = "humantime_serde")]
-    pub max_timeout: Option<Duration>,
-
     /// Initial timeout
     #[cfg_attr(feature = "clap", arg(long))]
     #[cfg_attr(feature = "clap", clap(value_parser = humantime::parse_duration))]
     #[serde(with = "humantime_serde")]
     pub initial_timeout: Duration,
+
+    /// Maximum timeout
+    #[cfg_attr(feature = "clap", arg(long))]
+    #[cfg_attr(feature = "clap", clap(value_parser = humantime::parse_duration))]
+    #[serde(with = "humantime_serde")]
+    pub max_timeout: Option<Duration>,
 
     /// Reset timeout to this on SIGUSR1
     #[cfg_attr(feature = "clap", arg(long))]
