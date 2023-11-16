@@ -8,7 +8,7 @@ edition.workspace = true
 clap = { workspace = true, features = ["derive"] }
 futures.workspace = true
 humantime-serde = "1.1.1"
-k8s-openapi.workspace = true
+k8s-openapi = { workspace = true, features = ["v1_26"] }
 kube.workspace = true
 kubernetes-namespace-watchdog-lib = { version = "0.1.0", path = "../common", features = ["clap"] }
 serde.workspace = true
