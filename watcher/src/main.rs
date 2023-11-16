@@ -95,7 +95,8 @@ async fn main() {
                 Api::<Namespace>::all(client.clone())
                     .delete(&client_config.default_namespace, &DeleteParams::default())
                     .await.expect("Failed to delete namespace");
-                unreachable!("We should have just deleted ourselves. Why are we still here?")
+                eprintln!("We should have just deleted ourselves. Yet we're still here. Time will heal that.");
+                break;
             }
         }
     }

@@ -6,7 +6,8 @@ use k8s_openapi::{
     api::{
         apps::v1::{Deployment, DeploymentSpec, DeploymentStrategy},
         core::v1::{
-            Container, Pod, PodSpec, PodTemplateSpec, ResourceRequirements, ServiceAccount,
+            Container, Namespace, Pod, PodSpec, PodTemplateSpec, ResourceRequirements,
+            ServiceAccount,
         },
         rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject},
     },
@@ -36,11 +37,13 @@ struct DeployArgs {
     #[arg(short, long)]
     // namespace to watch
     namespace: String,
+    #[arg(short, long, value_enum, default_value = "auto")]
+    create: CreateNamespace,
     #[command(flatten)]
     watch_args: WatchArgs,
 }
 
-#[derive(clap::ValueEnum, Clone, Copy)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum CreateNamespace {
     Never,
     Auto,
@@ -53,19 +56,30 @@ const CN: &str = "namespace-watchdog";
 async fn main() -> anyhow::Result<()> {
     let DeployArgs {
         namespace,
+        create,
         mut watch_args,
     } = clap::Parser::parse();
     watch_args.listen = Some("0.0.0.0:8080".parse().unwrap());
     let client = Client::try_default()
         .await
         .context("Failed to construct client")?;
+    let ns_api = Api::<Namespace>::all(client.clone());
+    let nsr = crate::namespace(&namespace);
+    match create {
+        CreateNamespace::Never => Ok(()),
+        CreateNamespace::Auto => ns_api
+            .patch(&namespace, &PatchParams::apply(CN), &Patch::Apply(nsr))
+            .await
+            .map(|_| ()),
+        CreateNamespace::Always => ns_api.create(&default(), &nsr).await.map(|_| ()),
+    }
+    .context("Create namespace")?;
     apply(&client, &namespace, service_account(&namespace)).await?;
     apply(&client, &namespace, role(&namespace)).await?;
     apply(&client, &namespace, role_binding(&namespace)).await?;
     apply(&client, &namespace, deployment(&namespace, &watch_args)).await?;
 
     let mut sender = None;
-    sleep((watch_args.initial_timeout / 2).into()).await;
     loop {
         let sender = match sender.is_some() {
             true => sender.as_mut().unwrap(),
@@ -141,7 +155,7 @@ where
 
 fn role_binding(namespace: &str) -> RoleBinding {
     RoleBinding {
-        metadata: cnmeta(&namespace),
+        metadata: metadata(&namespace),
         role_ref: RoleRef {
             api_group: "rbac.authorization.k8s.io".into(),
             kind: Role::kind(&()).into(),
@@ -158,7 +172,7 @@ fn role_binding(namespace: &str) -> RoleBinding {
 
 fn role(namespace: &str) -> Role {
     Role {
-        metadata: cnmeta(namespace),
+        metadata: metadata(namespace),
         rules: Some(vec![PolicyRule {
             api_groups: Some(vec!["".into()]),
             resources: Some(vec!["namespaces".into()]),
@@ -170,7 +184,7 @@ fn role(namespace: &str) -> Role {
 
 fn service_account(namespace: &str) -> ServiceAccount {
     ServiceAccount {
-        metadata: cnmeta(namespace),
+        metadata: metadata(namespace),
         ..default()
     }
 }
@@ -200,7 +214,7 @@ fn deployment(namespace: &str, watch_args: &WatchArgs) -> Deployment {
         .collect::<Vec<_>>()
     };
     Deployment {
-        metadata: cnmeta(namespace),
+        metadata: metadata(namespace),
         spec: Some(DeploymentSpec {
             replicas: Some(1),
             strategy: Some(DeploymentStrategy {
@@ -239,7 +253,17 @@ fn deployment(namespace: &str, watch_args: &WatchArgs) -> Deployment {
     }
 }
 
-fn cnmeta(namespace: &str) -> ObjectMeta {
+fn namespace(namespace: &str) -> Namespace {
+    Namespace {
+        metadata: ObjectMeta {
+            name: ss(namespace),
+            ..default()
+        },
+        ..default()
+    }
+}
+
+fn metadata(namespace: &str) -> ObjectMeta {
     ObjectMeta {
         name: ss(CN),
         namespace: ss(namespace),
