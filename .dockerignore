@@ -1,4 +1,6 @@
 target/
+result
 .git/
 .dockerignore
 Dockerfile
+docker-bake.hcl
