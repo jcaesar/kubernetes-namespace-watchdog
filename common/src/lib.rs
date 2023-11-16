@@ -262,8 +262,8 @@ pub mod resources {
                         containers: vec![Container {
                             name: "main".into(),
                             args: Some(args),
-                            image: ss(format!("liftm/kubernetes-{CN}")),
-                            image_pull_policy: ss("Always"),
+                            image: ss(format!("liftm/kubernetes-{CN}:0.1.0")),
+                            image_pull_policy: ss("IfNotPresent"),
                             resources: Some(ResourceRequirements {
                                 limits: resources.clone(),
                                 requests: resources,
