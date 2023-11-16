@@ -3,12 +3,13 @@ use futures::stream;
 use futures::stream::StreamExt;
 use futures::Stream;
 use k8s_openapi::api::core::v1::Namespace;
+use k8s_openapi::chrono::Local;
 use kube::api::DeleteParams;
 use kube::Api;
 use kube::Client;
 use kube::Config;
+use kubernetes_namespace_watchdog_lib::PostTimeout;
 use kubernetes_namespace_watchdog_lib::WatchArgs;
-use serde::Deserialize;
 use std::cmp::max;
 use std::cmp::min;
 use std::convert::Infallible;
@@ -31,6 +32,8 @@ struct Main {
     #[command(flatten)]
     command: WatchArgs,
 }
+
+const FMT: &str = "%Y-%m-%d %H:%M:%S";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -55,23 +58,22 @@ async fn main() {
     let max_timeout = max_timeout.unwrap_or(initial_timeout);
     let sigusr1_timeout = sigusr1_timeout.map(|sigusr1_timeout| {
         SignalStream::new(signal(SignalKind::user_defined1()).expect("Failed to listen for signal"))
-            .map(move |()| Instant::now() + sigusr1_timeout)
+            .map(move |()| {
+                heartbeat("USR1", sigusr1_timeout);
+                Instant::now() + sigusr1_timeout
+            })
     });
     let listen_timeout = listen.map(|listen| {
         let (ps, pr) = mpsc::channel(10);
-        #[derive(Deserialize, Clone, Debug)]
-        struct Timeout {
-            #[serde(with = "humantime_serde")]
-            timeout: Option<Duration>,
-        }
         let route = warp::any()
             .and(warp::filters::method::post())
-            .and(warp::query::<Timeout>())
+            .and(warp::query::<PostTimeout>())
             .and(warp::any().map(move || ps.clone()))
             .and_then(
-                move |Timeout { timeout }: Timeout, ps: mpsc::Sender<Instant>| async move {
-                    let timeout =
-                        Instant::now() + min(max_timeout, timeout.unwrap_or(initial_timeout));
+                move |PostTimeout { timeout }: PostTimeout, ps: mpsc::Sender<Instant>| async move {
+                    let adv = min(max_timeout, timeout.unwrap_or(initial_timeout));
+                    let timeout = Instant::now() + adv;
+                    heartbeat("HTTP", adv);
                     ps.send(timeout).await.expect("Channel died");
                     Ok::<_, Infallible>("bumped")
                 },
@@ -97,6 +99,15 @@ async fn main() {
             }
         }
     }
+}
+
+fn heartbeat(bumper: &str, adv: Duration) {
+    let now = Local::now();
+    println!(
+        "[{}] {bumper} bumped to {}",
+        now.format(FMT),
+        (now + adv).format(FMT)
+    );
 }
 
 fn none_to_pending<T, S: Stream<Item = T>>(ose: Option<S>) -> impl Stream<Item = T> {

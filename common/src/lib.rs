@@ -31,3 +31,9 @@ pub struct WatchArgs {
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub listen: Option<SocketAddr>,
 }
+
+#[derive(Deserialize, Serialize)]
+pub struct PostTimeout {
+    #[serde(with = "humantime_serde")]
+    pub timeout: Option<Duration>,
+}

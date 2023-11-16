@@ -11,7 +11,3 @@ clap = { workspace = true, optional = true }
 humantime-serde = "1.1.1"
 serde.workspace = true
 serde_with.workspace = true
-
-[features]
-default = ["fixed-image-hash"]
-fixed-image-hash = []

@@ -1,10 +1,13 @@
-use std::collections::BTreeMap;
+use std::{cmp::max, collections::BTreeMap, pin::Pin, task::Poll, time::Duration};
 
-use anyhow::Context;
+use anyhow::{ensure, Context};
+use hyper::Request;
 use k8s_openapi::{
     api::{
         apps::v1::{Deployment, DeploymentSpec, DeploymentStrategy},
-        core::v1::{Container, PodSpec, PodTemplateSpec, ResourceRequirements, ServiceAccount},
+        core::v1::{
+            Container, Pod, PodSpec, PodTemplateSpec, ResourceRequirements, ServiceAccount,
+        },
         rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject},
     },
     apimachinery::pkg::{api::resource::Quantity, apis::meta::v1::LabelSelector},
@@ -12,11 +15,13 @@ use k8s_openapi::{
     NamespaceResourceScope,
 };
 use kube::{
-    api::{Patch, PatchParams},
+    api::{ListParams, Patch, PatchParams},
     core::ObjectMeta,
+    runtime::{conditions::is_pod_running, wait::await_condition},
     Api, Client, Resource, ResourceExt as _,
 };
 use kubernetes_namespace_watchdog_lib::WatchArgs;
+use tokio::time::sleep;
 
 fn default<T: Default>() -> T {
     std::default::Default::default()
@@ -35,22 +40,80 @@ struct DeployArgs {
     watch_args: WatchArgs,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum CreateNamespace {
+    Never,
+    Auto,
+    Always,
+}
+
 const CN: &str = "namespace-watchdog";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let DeployArgs {
         namespace,
-        watch_args,
+        mut watch_args,
     } = clap::Parser::parse();
+    watch_args.listen = Some("0.0.0.0:8080".parse().unwrap());
     let client = Client::try_default()
         .await
         .context("Failed to construct client")?;
     apply(&client, &namespace, service_account(&namespace)).await?;
     apply(&client, &namespace, role(&namespace)).await?;
     apply(&client, &namespace, role_binding(&namespace)).await?;
-    apply(&client, &namespace, deployment(&namespace, watch_args)).await?;
-    Ok(())
+    apply(&client, &namespace, deployment(&namespace, &watch_args)).await?;
+
+    let mut sender = None;
+    sleep((watch_args.initial_timeout / 2).into()).await;
+    loop {
+        let sender = match sender.is_some() {
+            true => sender.as_mut().unwrap(),
+            false => {
+                let pods = Api::<Pod>::namespaced(client.clone(), &namespace);
+                let pod = pods
+                    .list(&ListParams::default().limit(1).labels(&format!("name={CN}")))
+                    .await?;
+                anyhow::ensure!(
+                    matches!(pod.metadata.remaining_item_count, Some(0) | None),
+                    "More than one possible pod"
+                );
+                let pod = pod.items.get(0).context("Watchdog pod not found")?;
+                let pod = pod
+                    .meta()
+                    .name
+                    .as_ref()
+                    .expect("Running pods should have names");
+                let running = await_condition(pods.clone(), pod, is_pod_running());
+                let _ = tokio::time::timeout(
+                    max(watch_args.initial_timeout, Duration::from_secs(90)),
+                    running,
+                )
+                .await?;
+                let mut pf = pods.portforward(pod, &[8080]).await?;
+                let port = pf.take_stream(8080).unwrap();
+                let (snd, connection) =
+                    hyper::client::conn::http1::handshake(HyperAdapter(port)).await?;
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        eprintln!("Error in connection: {}", e);
+                    }
+                });
+                sender.insert(snd)
+            }
+        };
+
+        let http_req = Request::builder()
+            .uri("/?timeout=90sec")
+            .header("Connection", "keep-alive")
+            .method("POST")
+            .body(String::new())
+            .unwrap();
+
+        let (parts, _body) = sender.send_request(http_req).await?.into_parts();
+        ensure!(parts.status == 200);
+        sleep(Duration::from_secs(10).into()).await;
+    }
 }
 
 async fn apply<K>(client: &Client, namespace: &str, resource: K) -> anyhow::Result<()>
@@ -112,7 +175,7 @@ fn service_account(namespace: &str) -> ServiceAccount {
     }
 }
 
-fn deployment(namespace: &str, watch_args: WatchArgs) -> Deployment {
+fn deployment(namespace: &str, watch_args: &WatchArgs) -> Deployment {
     let labels = Some(BTreeMap::from([("name".to_string(), CN.to_string())]));
     let resources = Some(BTreeMap::from([
         ("cpu".to_string(), Quantity("5m".into())),
@@ -127,7 +190,7 @@ fn deployment(namespace: &str, watch_args: WatchArgs) -> Deployment {
             listen,
         } = watch_args;
         [
-            Some(format!("--initial-timeout={}", humantime::Duration::from(initial_timeout))),
+            Some(format!("--initial-timeout={}", humantime::Duration::from(*initial_timeout))),
             max_timeout.map(humantime::Duration::from).map(|to| format!("--max-timeout={to}")),
             sigusr1_timeout.map(humantime::Duration::from).map(|to| format!("--sigusr1-timeout={to}")),
             listen.map(|l| format!("--listen={l}")),
@@ -158,14 +221,8 @@ fn deployment(namespace: &str, watch_args: WatchArgs) -> Deployment {
                     containers: vec![Container {
                         name: "main".into(),
                         args: Some(args),
-                        #[cfg(feature = "fixed-image-hash")]
-                        image: ss(format!("liftm/{CN}@sha256")),
-                        #[cfg(not(feature = "fixed-image-hash"))]
-                        image: ss(format!("liftm/{CN}")),
-                        image_pull_policy: ss(match cfg!(feature = "fixed-image-hash") {
-                            true => "IfNotPresent",
-                            false => "Always",
-                        }),
+                        image: ss(format!("liftm/kubernetes-{CN}")),
+                        image_pull_policy: ss("Always"),
                         resources: Some(ResourceRequirements {
                             limits: resources.clone(),
                             requests: resources,
@@ -187,5 +244,49 @@ fn cnmeta(namespace: &str) -> ObjectMeta {
         name: ss(CN),
         namespace: ss(namespace),
         ..default()
+    }
+}
+
+struct HyperAdapter<R>(R);
+impl<R: tokio::io::AsyncRead + Unpin> hyper::rt::Read for HyperAdapter<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        mut buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        use tokio::io::ReadBuf;
+        let mut tbuf = ReadBuf::uninit(unsafe { buf.as_mut() });
+        match Pin::new(&mut self.0).poll_read(cx, &mut tbuf) {
+            Poll::Ready(res) => {
+                let advanced = tbuf.filled().len();
+                unsafe { buf.advance(advanced) };
+                Poll::Ready(res)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<R: tokio::io::AsyncWrite + Unpin> hyper::rt::Write for HyperAdapter<R> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
     }
 }
