@@ -53,12 +53,13 @@ pub struct PostTimeout {
 
 pub const CN: &str = "namespace-watchdog";
 
-pub async fn own(
-    client: Client,
-    namespace: String,
-    mut watch_args: WatchArgs,
-) -> Result<Infallible, anyhow::Error> {
-    watch_args.listen = Some("0.0.0.0:8080".parse().unwrap());
+pub async fn own(client: Client, namespace: String) -> Result<Infallible, anyhow::Error> {
+    let watch_args = WatchArgs {
+        listen: Some("0.0.0.0:8080".parse().unwrap()),
+        initial_timeout: Duration::from_secs(90),
+        max_timeout: None,
+        sigusr1_timeout: Some(Duration::from_secs(600)),
+    };
     apply(&client, &namespace, resources::service_account(&namespace)).await?;
     apply(&client, &namespace, resources::role(&namespace)).await?;
     apply(&client, &namespace, resources::role_binding(&namespace)).await?;
@@ -68,44 +69,63 @@ pub async fn own(
         resources::deployment(&namespace, &watch_args),
     )
     .await?;
-    let mut sender = None;
-    loop {
-        let sender = match sender.is_some() {
-            true => sender.as_mut().unwrap(),
-            false => {
-                let pods = Api::<Pod>::namespaced(client.clone(), &namespace);
-                let pod = pods
-                    .list(&ListParams::default().limit(1).labels(&format!("name={CN}")))
-                    .await?;
-                anyhow::ensure!(
-                    matches!(pod.metadata.remaining_item_count, Some(0) | None),
-                    "More than one possible pod"
-                );
-                let pod = pod.items.get(0).context("Watchdog pod not found")?;
-                let pod = pod
-                    .meta()
-                    .name
-                    .as_ref()
-                    .expect("Running pods should have names");
-                let running = await_condition(pods.clone(), pod, is_pod_running());
-                let _ = tokio::time::timeout(
-                    max(watch_args.initial_timeout, Duration::from_secs(90)),
-                    running,
-                )
-                .await?;
-                let mut pf = pods.portforward(pod, &[8080]).await?;
-                let port = pf.take_stream(8080).unwrap();
-                let (snd, connection) =
-                    hyper::client::conn::http1::handshake(HyperAdapter(port)).await?;
-                tokio::spawn(async move {
-                    if let Err(e) = connection.await {
-                        eprintln!("Error in connection: {}", e);
-                    }
-                });
-                sender.insert(snd)
-            }
-        };
 
+    let mut failures = 0;
+    let mut error = None;
+    while failures < 3 {
+        let mut succeeded_once = false;
+        let res = keep_alive(&client, &namespace, &watch_args, &mut succeeded_once).await;
+        match succeeded_once {
+            true => {
+                failures = 0;
+                error.take();
+            }
+            false => {
+                failures += 1;
+                error.get_or_insert(res.unwrap_err());
+            }
+        }
+        sleep(Duration::from_secs(10).into()).await;
+    }
+    Err(error.unwrap())
+}
+
+async fn keep_alive(
+    client: &Client,
+    namespace: &str,
+    watch_args: &WatchArgs,
+    succeeded_once: &mut bool,
+) -> Result<Infallible, anyhow::Error> {
+    let pods = Api::<Pod>::namespaced(client.clone(), &namespace);
+    let pod = pods
+        .list(&ListParams::default().limit(1).labels(&format!("name={CN}")))
+        .await?;
+    anyhow::ensure!(
+        matches!(pod.metadata.remaining_item_count, Some(0) | None),
+        "More than one possible pod"
+    );
+    let pod = pod.items.get(0).context("Watchdog pod not found")?;
+    let pod = pod
+        .meta()
+        .name
+        .as_ref()
+        .expect("Running pods should have names");
+    let running = await_condition(pods.clone(), pod, is_pod_running());
+    let _ = tokio::time::timeout(
+        max(watch_args.initial_timeout, Duration::from_secs(90)),
+        running,
+    )
+    .await?;
+    let mut pf = pods.portforward(pod, &[8080]).await?;
+    let port = pf.take_stream(8080).unwrap();
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(HyperAdapter(port)).await?;
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("Error in connection: {}", e);
+        }
+    });
+    loop {
         let http_req = Request::builder()
             .uri("/?timeout=90sec")
             .header("Connection", "keep-alive")
@@ -115,6 +135,7 @@ pub async fn own(
 
         let (parts, _body) = sender.send_request(http_req).await?.into_parts();
         ensure!(parts.status == 200);
+        *succeeded_once = true;
         sleep(Duration::from_secs(10).into()).await;
     }
 }

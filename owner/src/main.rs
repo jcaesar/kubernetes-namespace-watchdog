@@ -1,5 +1,4 @@
 use anyhow::Context;
-use common::WatchArgs;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::{
     api::{Patch, PatchParams},
@@ -14,8 +13,6 @@ struct DeployArgs {
     /// Create the namespace if it doesn't exist
     #[arg(short, long, value_enum, default_value = "auto")]
     create: CreateNamespace,
-    #[command(flatten)]
-    watch_args: WatchArgs,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -27,11 +24,7 @@ enum CreateNamespace {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let DeployArgs {
-        namespace,
-        create,
-        watch_args,
-    } = clap::Parser::parse();
+    let DeployArgs { namespace, create } = clap::Parser::parse();
     let client = Client::try_default()
         .await
         .context("Failed to construct client")?;
@@ -50,6 +43,6 @@ async fn main() -> anyhow::Result<()> {
         CreateNamespace::Always => ns_api.create(&Default::default(), &nsr).await.map(|_| ()),
     }
     .context("Create namespace")?;
-    common::own(client, namespace, watch_args).await?;
+    common::own(client, namespace).await?;
     Ok(())
 }
