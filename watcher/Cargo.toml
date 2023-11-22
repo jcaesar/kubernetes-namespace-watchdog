@@ -1,5 +1,4 @@
 [package]
-kubernetes-namespace-watchdog-lib = { version = "0.1.0", path = "../common", features = ["clap"] }
 name = "kubernetes-namespace-watchdog-watcher"
 version.workspace = true
 authors.workspace = true

@@ -16,6 +16,7 @@ use std::cmp::max;
 use std::cmp::min;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::process::exit;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::select;
@@ -84,13 +85,29 @@ async fn main() {
             " If you're running this manually, hit Ctrl-C now!",
         )),
     }
+    let signals = [
+        (SignalKind::interrupt(), "SIGINT"),
+        (SignalKind::terminate(), "SIGTERM"),
+    ];
+    for (kind, name) in signals {
+        tokio::spawn(async move {
+            signal(kind)
+                .expect("Failed to listen for termination signal")
+                .recv()
+                .await;
+            eprintln!("[{}] Exiting on {name}", Local::now().format(FMT));
+            exit(128 + kind.as_raw_value());
+        });
+    }
     let max_timeout = max_timeout.unwrap_or(initial_timeout);
     let sigusr1_timeout = sigusr1_timeout.map(|sigusr1_timeout| {
-        SignalStream::new(signal(SignalKind::user_defined1()).expect("Failed to listen for signal"))
-            .map(move |()| {
-                heartbeat("USR1", sigusr1_timeout);
-                Instant::now() + sigusr1_timeout
-            })
+        SignalStream::new(
+            signal(SignalKind::user_defined1()).expect("Failed to listen for USR1 signal"),
+        )
+        .map(move |()| {
+            heartbeat("USR1", sigusr1_timeout);
+            Instant::now() + sigusr1_timeout
+        })
     });
     let listen_timeout = listen.map(|listen| {
         let (ps, pr) = mpsc::channel(10);
@@ -124,8 +141,11 @@ async fn main() {
                 Api::<Namespace>::all(client.clone())
                     .delete(&client_config.default_namespace, &DeleteParams::default())
                     .await.expect("Failed to delete namespace");
-                eprintln!("We should have just deleted ourselves. Yet we're still here. Time will heal that.");
-                break;
+                eprintln!(concat!("[{}] We should have just deleted ourselves.",
+                    " Yet we're still here. Time will heal that.",),
+                    Local::now().format(FMT)
+                );
+                return;
             }
         }
     }
