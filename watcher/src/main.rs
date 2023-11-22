@@ -2,17 +2,20 @@ use futures::future::Either;
 use futures::stream;
 use futures::stream::StreamExt;
 use futures::Stream;
+use humantime_serde::re::humantime;
 use k8s_openapi::api::core::v1::Namespace;
 use k8s_openapi::chrono::Local;
 use kube::api::DeleteParams;
 use kube::Api;
 use kube::Client;
 use kube::Config;
-use kubernetes_namespace_watchdog_lib::PostTimeout;
-use kubernetes_namespace_watchdog_lib::WatchArgs;
+use serde::Deserialize;
+use serde::Serialize;
+use serde_with::DisplayFromStr;
 use std::cmp::max;
 use std::cmp::min;
 use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::select;
@@ -26,24 +29,50 @@ use warp::Filter;
 
 /// Watchdog: Remove a namespace if no treat is fed to us for a while
 /// Not meant to be run manually
-#[derive(clap::Parser)]
-#[command(author, version, about)]
+#[serde_with::serde_as]
+#[serde_with::skip_serializing_none]
+#[derive(Deserialize, Serialize, clap::Parser)]
 struct Main {
-    #[command(flatten)]
-    command: WatchArgs,
+    /// Initial timeout
+    #[arg(long)]
+    #[clap(value_parser = humantime::parse_duration)]
+    #[serde(with = "humantime_serde")]
+    pub initial_timeout: Duration,
+
+    /// Maximum timeout
+    #[arg(long)]
+    #[clap(value_parser = humantime::parse_duration)]
+    #[serde(with = "humantime_serde")]
+    pub max_timeout: Option<Duration>,
+
+    /// Reset timeout to this on SIGUSR1
+    #[arg(long)]
+    #[clap(value_parser = humantime::parse_duration)]
+    #[serde(with = "humantime_serde")]
+    pub sigusr1_timeout: Option<Duration>,
+
+    /// HTTP API to reset timeout
+    #[arg(long)]
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub listen: Option<SocketAddr>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct PostTimeout {
+    #[serde(with = "humantime_serde")]
+    pub timeout: Option<Duration>,
 }
 
 const FMT: &str = "%Y-%m-%d %H:%M:%S";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let command: Main = clap::Parser::parse();
-    let WatchArgs {
+    let Main {
         max_timeout,
         initial_timeout,
         sigusr1_timeout,
         listen,
-    } = command.command;
+    } = clap::Parser::parse();
     let client_config = &Config::infer()
         .await
         .expect("Failed to configure kube client");

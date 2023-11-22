@@ -1,5 +1,4 @@
 use anyhow::{ensure, Context};
-use humantime_serde::re::humantime;
 use hyper::Request;
 use k8s_openapi::{
     api::core::v1::Pod,
@@ -11,70 +10,24 @@ use kube::{
     runtime::{conditions::is_pod_running, wait::await_condition},
     Api, Client, Resource,
 };
-use serde::Deserialize;
-use serde_with::DisplayFromStr;
-use std::{cmp::max, convert::Infallible, net::SocketAddr, pin::Pin, task::Poll, time::Duration};
+use std::{convert::Infallible, pin::Pin, task::Poll, time::Duration};
 use tokio::time::sleep;
 
-#[serde_with::serde_as]
-#[serde_with::skip_serializing_none]
-#[derive(Deserialize, Serialize)]
-#[cfg_attr(feature = "clap", derive(clap::Parser))]
-pub struct WatchArgs {
-    /// Initial timeout
-    #[cfg_attr(feature = "clap", arg(long))]
-    #[cfg_attr(feature = "clap", clap(value_parser = humantime::parse_duration))]
-    #[serde(with = "humantime_serde")]
-    pub initial_timeout: Duration,
-
-    /// Maximum timeout
-    #[cfg_attr(feature = "clap", arg(long))]
-    #[cfg_attr(feature = "clap", clap(value_parser = humantime::parse_duration))]
-    #[serde(with = "humantime_serde")]
-    pub max_timeout: Option<Duration>,
-
-    /// Reset timeout to this on SIGUSR1
-    #[cfg_attr(feature = "clap", arg(long))]
-    #[cfg_attr(feature = "clap", clap(value_parser = humantime::parse_duration))]
-    #[serde(with = "humantime_serde")]
-    pub sigusr1_timeout: Option<Duration>,
-
-    /// HTTP API to reset timeout
-    #[cfg_attr(feature = "clap", arg(long))]
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    pub listen: Option<SocketAddr>,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct PostTimeout {
-    #[serde(with = "humantime_serde")]
-    pub timeout: Option<Duration>,
-}
-
+/// Name of kubernetes resources being created
 pub const CN: &str = "namespace-watchdog";
 
+/// Install resources and keep polling watcher
 pub async fn own(client: Client, namespace: String) -> Result<Infallible, anyhow::Error> {
-    let watch_args = WatchArgs {
-        listen: Some("0.0.0.0:8080".parse().unwrap()),
-        initial_timeout: Duration::from_secs(90),
-        max_timeout: None,
-        sigusr1_timeout: Some(Duration::from_secs(600)),
-    };
     apply(&client, &namespace, resources::service_account(&namespace)).await?;
     apply(&client, &namespace, resources::role(&namespace)).await?;
     apply(&client, &namespace, resources::role_binding(&namespace)).await?;
-    apply(
-        &client,
-        &namespace,
-        resources::deployment(&namespace, &watch_args),
-    )
-    .await?;
+    apply(&client, &namespace, resources::deployment(&namespace)).await?;
 
     let mut failures = 0;
     let mut error = None;
     while failures < 3 {
         let mut succeeded_once = false;
-        let res = keep_alive(&client, &namespace, &watch_args, &mut succeeded_once).await;
+        let res = keep_alive(&client, &namespace, &mut succeeded_once).await;
         match succeeded_once {
             true => {
                 failures = 0;
@@ -93,7 +46,6 @@ pub async fn own(client: Client, namespace: String) -> Result<Infallible, anyhow
 async fn keep_alive(
     client: &Client,
     namespace: &str,
-    watch_args: &WatchArgs,
     succeeded_once: &mut bool,
 ) -> Result<Infallible, anyhow::Error> {
     let pods = Api::<Pod>::namespaced(client.clone(), &namespace);
@@ -111,11 +63,7 @@ async fn keep_alive(
         .as_ref()
         .expect("Running pods should have names");
     let running = await_condition(pods.clone(), pod, is_pod_running());
-    let _ = tokio::time::timeout(
-        max(watch_args.initial_timeout, Duration::from_secs(90)),
-        running,
-    )
-    .await?;
+    let _ = tokio::time::timeout(Duration::from_secs(90), running).await?;
     let mut pf = pods.portforward(pod, &[8080]).await?;
     let port = pf.take_stream(8080).unwrap();
     let (mut sender, connection) =
@@ -164,8 +112,7 @@ where
 }
 
 pub mod resources {
-    use crate::{default, WatchArgs, CN};
-    use humantime_serde::re::humantime;
+    use crate::{default, CN};
     use k8s_openapi::{
         api::{
             apps::v1::{Deployment, DeploymentSpec, DeploymentStrategy},
@@ -216,30 +163,12 @@ pub mod resources {
         }
     }
 
-    pub fn deployment(namespace: &str, watch_args: &WatchArgs) -> Deployment {
+    pub fn deployment(namespace: &str) -> Deployment {
         let labels = Some(BTreeMap::from([("name".to_string(), CN.to_string())]));
         let resources = Some(BTreeMap::from([
             ("cpu".to_string(), Quantity("5m".into())),
             ("memory".to_string(), Quantity("10M".into())),
         ]));
-        #[rustfmt::skip]
-    let args = {
-        let WatchArgs {
-            max_timeout,
-            initial_timeout,
-            sigusr1_timeout,
-            listen,
-        } = watch_args;
-        [
-            Some(format!("--initial-timeout={}", humantime::Duration::from(*initial_timeout))),
-            max_timeout.map(humantime::Duration::from).map(|to| format!("--max-timeout={to}")),
-            sigusr1_timeout.map(humantime::Duration::from).map(|to| format!("--sigusr1-timeout={to}")),
-            listen.map(|l| format!("--listen={l}")),
-        ] 
-        .into_iter()
-        .filter_map(|v| v)
-        .collect::<Vec<_>>()
-    };
         Deployment {
             metadata: metadata(namespace),
             spec: Some(DeploymentSpec {
@@ -261,7 +190,10 @@ pub mod resources {
                         service_account_name: ss(CN),
                         containers: vec![Container {
                             name: "main".into(),
-                            args: Some(args),
+                            args: Some(vec![
+                                "--initial-timeout 60 seconds".into(),
+                                "--listen 0.0.0.0:8080".into(),
+                            ]),
                             image: ss(format!("liftm/kubernetes-{CN}")),
                             image_pull_policy: ss("Always"),
                             resources: Some(ResourceRequirements {

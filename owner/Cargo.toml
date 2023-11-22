@@ -11,5 +11,5 @@ humantime.workspace = true
 hyper = { version = "1.0.0", features = ["client", "http1"] }
 k8s-openapi = { workspace = true, features = ["v1_26"] }
 kube.workspace = true
-common = { version = "0.1.0", path = "../common", features = ["clap"], package = "kubernetes-namespace-watchdog-lib" }
+common = { version = "0.1.0", path = "../common", package = "kubernetes-namespace-watchdog-lib" }
 tokio.workspace = true

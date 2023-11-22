@@ -973,13 +973,10 @@ name = "kubernetes-namespace-watchdog-lib"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
- "humantime-serde",
  "hyper 1.0.0",
  "k8s-openapi",
  "kube",
  "serde",
- "serde_with",
  "tokio",
 ]
 
@@ -992,8 +989,8 @@ dependencies = [
  "humantime-serde",
  "k8s-openapi",
  "kube",
- "kubernetes-namespace-watchdog-lib",
  "serde",
+ "serde_with",
  "tokio",
  "tokio-stream",
  "warp",

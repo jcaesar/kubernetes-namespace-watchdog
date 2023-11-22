@@ -31,8 +31,10 @@
           mkBins = commonArgsOrig:
             let
               commonArgs = commonArgsOrig // { inherit src; };
-              cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-              bin = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
+              bin = craneLib.buildPackage (commonArgs // { 
+                #cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+                cargoBuildCommand = "cargo build --profile maxopt";
+              });
             in bin;
           allBins = mkBins {
             pname = "workspace";

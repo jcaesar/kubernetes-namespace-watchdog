@@ -8,11 +8,11 @@ edition.workspace = true
 
 [dependencies]
 anyhow = "1.0.75"
-clap = { workspace = true, optional = true }
-humantime-serde = "1.1.1"
 hyper = { version = "1.0.0", features = ["http1", "client"] }
 k8s-openapi.workspace = true
 kube = { workspace = true, features = ["runtime", "ws"] }
 serde.workspace = true
-serde_with.workspace = true
 tokio.workspace = true
+
+[features]
+standalone_build = ["k8s-openapi/v1_26"]
