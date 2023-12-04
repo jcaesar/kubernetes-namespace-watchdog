@@ -4,6 +4,7 @@ use kube::{
     api::{Patch, PatchParams},
     Api, Client,
 };
+use namespace_watchdog_owner::{resources, CN};
 
 #[derive(clap::Parser)]
 struct DeployArgs {
@@ -29,20 +30,16 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Failed to construct client")?;
     let ns_api = Api::<Namespace>::all(client.clone());
-    let nsr = common::resources::namespace(&namespace);
+    let nsr = resources::namespace(&namespace);
     match create {
         CreateNamespace::Never => Ok(()),
         CreateNamespace::Auto => ns_api
-            .patch(
-                &namespace,
-                &PatchParams::apply(common::CN),
-                &Patch::Apply(nsr),
-            )
+            .patch(&namespace, &PatchParams::apply(CN), &Patch::Apply(nsr))
             .await
             .map(|_| ()),
         CreateNamespace::Always => ns_api.create(&Default::default(), &nsr).await.map(|_| ()),
     }
     .context("Create namespace")?;
-    common::own(client, namespace).await?;
+    namespace_watchdog_owner::own(client, namespace).await?;
     Ok(())
 }

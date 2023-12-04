@@ -22,16 +22,18 @@
     flake-utils.lib.eachDefaultSystem
       (system:
         let
-          pkgs = import nixpkgs {
+          pkgs = (import nixpkgs {
             inherit system;
             overlays = [ (import rust-overlay) ];
-          };
+          }).pkgsMusl;
           craneLib = crane.lib.${system};
           src = craneLib.cleanCargoSource ./.;
           mkBins = commonArgsOrig:
             let
               commonArgs = commonArgsOrig // { inherit src; };
-              bin = craneLib.buildPackage (commonArgs // { 
+              bin = craneLib.buildPackage (commonArgs // {
+                CARGO_TARGET__UNKNOWN_LINUX_GNU_LINKER = "${stdenv.cc.targetPrefix}cc";
+           
                 #cargoArtifacts = craneLib.buildDepsOnly commonArgs;
                 cargoBuildCommand = "cargo build --profile maxopt";
               });

@@ -3,7 +3,6 @@ resolver = "2"
 members = [
 	"watcher",
 	"owner",
-	"common",
 ]
 
 [workspace.package]
