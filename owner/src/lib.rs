@@ -191,8 +191,8 @@ pub mod resources {
                         containers: vec![Container {
                             name: "main".into(),
                             args: Some(vec![
-                                "--initial-timeout 60 seconds".into(),
-                                "--listen 0.0.0.0:8080".into(),
+                                "--initial-timeout=60 seconds".into(),
+                                "--listen=0.0.0.0:8080".into(),
                             ]),
                             image: ss(format!("liftm/kubernetes-{CN}")),
                             image_pull_policy: ss("Always"),
