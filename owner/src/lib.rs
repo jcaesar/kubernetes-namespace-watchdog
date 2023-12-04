@@ -194,8 +194,11 @@ pub mod resources {
                                 "--initial-timeout=60 seconds".into(),
                                 "--listen=0.0.0.0:8080".into(),
                             ]),
-                            image: ss(format!("liftm/kubernetes-{CN}")),
-                            image_pull_policy: ss("Always"),
+                            image: ss(format!(
+                                "liftm/kubernetes-{CN}:{}",
+                                env!("CARGO_PKG_VERSION")
+                            )),
+                            image_pull_policy: ss("IfNotPresent"),
                             resources: Some(ResourceRequirements {
                                 limits: resources.clone(),
                                 requests: resources,

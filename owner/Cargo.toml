@@ -9,6 +9,12 @@ anyhow = "1.0.75"
 clap.workspace = true
 humantime.workspace = true
 hyper = { version = "1.0.0", features = ["client", "http1"] }
-k8s-openapi = { workspace = true, features = ["v1_26"] }
+k8s-openapi.workspace = true
 kube = { workspace = true, features = ["runtime", "ws"] }
 tokio.workspace = true
+
+[dev-dependencies]
+k8s-openapi = { workspace = true, features = ["v1_26"] }
+
+[features]
+v1_26 = ["k8s-openapi/v1_26"] # For cargo check (--all-features)
